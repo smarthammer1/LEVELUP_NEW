@@ -648,10 +648,10 @@
                 `;
             }
             
-            const interactiveHint = isConnected ? 
-                '💡 클릭해서 완료 상태를 변경할 수 있습니다 (빈칸 → ✓ → ○ → 빈칸)' : 
-                '⚠️ 테스트 모드 - 실제 업데이트는 Web App 연결 후 가능합니다';
-            
+    	const interactiveHint = isConnected ? 
+        	'💡 클릭해서 완료 상태를 변경할 수 있습니다 (빈칸 → ○ → ✓ → 빈칸)' : 
+       	 	'⚠️ 테스트 모드 - 실제 업데이트는 Web App 연결 후 가능합니다';
+           
             const couponHint = isConnected ? 
                 '💡 버튼을 클릭해서 쿠폰을 사용할 수 있습니다' : 
                 '⚠️ 테스트 모드 - 실제 사용은 Web App 연결 후 가능합니다';
@@ -973,21 +973,24 @@
         }
 
         // 추가 유틸리티 함수들
-        function getTodayKoreaDate() {
-            const now = new Date();
-            // 한국 시간으로 변환 (UTC+9)
-            const koreaTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
-            
-            // 새벽 시간 보정 (0시~6시는 전날로 처리)
-            const hour = koreaTime.getUTCHours();
-            if (hour >= 0 && hour <= 6) {
-                koreaTime.setUTCDate(koreaTime.getUTCDate() - 1);
-            }
-            
-            const dateStr = koreaTime.toISOString().split('T')[0];
-            console.log(`한국 시간 계산: 현재=${now.toLocaleString()}, 한국시간=${koreaTime.toISOString()}, 최종날짜=${dateStr}, 시간=${hour}시`);
-            return dateStr;
-        }
+function getTodayKoreaDate() {
+    const now = new Date();
+    // 한국 시간으로 변환 (UTC+9)
+    const koreaTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
+    
+    // *** 수정: 새벽 시간 보정을 더 제한적으로 적용 (0시~3시만) ***
+    const hour = koreaTime.getUTCHours();
+    if (hour >= 0 && hour <= 3) {
+        koreaTime.setUTCDate(koreaTime.getUTCDate() - 1);
+        console.log(`새벽 ${hour}시 감지: 전날로 보정 적용`);
+    } else {
+        console.log(`${hour}시 - 보정 없이 현재 날짜 사용`);
+    }
+    
+    const dateStr = koreaTime.toISOString().split('T')[0];
+    console.log(`한국 시간 계산: 현재=${now.toLocaleString()}, 한국시간=${koreaTime.toISOString()}, 최종날짜=${dateStr}, 시간=${hour}시`);
+    return dateStr;
+}
 
         function showNotification(message, type = 'info') {
             // 기존 알림 제거
@@ -1048,73 +1051,77 @@
         }
 
         // 태스크 상태 업데이트 함수
-        async function updateTaskInSheet(date, taskIndex, currentStatus) {
-            if (!isConnected) {
-                showNotification('⚠️ Web App에 연결되지 않았습니다.', 'warning');
-                return;
+async function updateTaskInSheet(date, taskIndex, currentStatus) {
+    if (!isConnected) {
+        showNotification('⚠️ Web App에 연결되지 않았습니다.', 'warning');
+        return;
+    }
+    
+    // *** 수정: 상태 순환 변경 (빈칸 → ○ → ✓ → 빈칸) ***
+    let newStatus = '';
+    if (currentStatus === '') {
+        newStatus = '○';  // 빈칸 → ○
+    } else if (currentStatus === '○') {
+        newStatus = '✓';  // ○ → ✓
+    } else if (currentStatus === '✓') {
+        newStatus = '';   // ✓ → 빈칸
+    } else {
+        newStatus = '○';  // 기타 → ○
+    }
+    
+    console.log(`태스크 업데이트 요청: 날짜=${date}, 인덱스=${taskIndex}, 현재상태='${currentStatus}', 새상태='${newStatus}'`);
+    
+    try {
+        const now = new Date();
+        const koreaTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
+        const clientTime = koreaTime.toTimeString().split(' ')[0]; // HH:MM:SS
+        const koreanDate = getTodayKoreaDate(); // 보정된 한국 날짜 사용
+        
+        console.log(`업데이트 파라미터: 보정된날짜=${koreanDate}, 클라이언트시간=${clientTime}`);
+        
+        // 실제 한국 날짜를 사용하여 업데이트
+        const updateUrl = `${webAppUrl}${webAppUrl.includes('?') ? '&' : '?'}action=updateTask&date=${encodeURIComponent(koreanDate)}&taskIndex=${taskIndex}&status=${encodeURIComponent(newStatus)}&clientTime=${encodeURIComponent(clientTime)}&forceDate=true`;
+        
+        showNotification('⏳ 업데이트 중...');
+        
+        const result = await jsonpRequest(updateUrl, 15000);
+        
+        console.log('업데이트 결과:', result);
+        
+        if (result && result.success) {
+            // *** 수정: 성공 메시지에 순서 안내 포함 ***
+            const statusFlow = result.details?.statusFlow || `${currentStatus || '빈칸'} → ${newStatus || '빈칸'}`;
+            showNotification(`✅ ${result.message}\n순서: ${statusFlow}`);
+            
+            // 즉시 UI 업데이트 (낙관적 업데이트)
+            const taskElement = document.querySelector(`[onclick*="updateTaskInSheet('${date}', ${taskIndex}, '${currentStatus}')"]`);
+            if (taskElement) {
+                const checkbox = taskElement.querySelector('.task-checkbox');
+                const statusIcon = newStatus === '✓' ? '✓' : newStatus === '○' ? '○' : '';
+                const statusClass = newStatus === '✓' ? 'checked' : newStatus === '○' ? 'partial' : '';
+                const taskClass = newStatus === '✓' ? 'completed' : newStatus === '○' ? 'partial' : '';
+                
+                checkbox.textContent = statusIcon;
+                checkbox.className = `task-checkbox ${statusClass}`;
+                taskElement.className = taskElement.className.replace(/\b(completed|partial)\b/g, '').trim() + ` ${taskClass}`;
+                
+                // onclick 이벤트도 업데이트
+                taskElement.setAttribute('onclick', `updateTaskInSheet('${koreanDate}', ${taskIndex}, '${newStatus}')`);
             }
             
-            // 상태 순환: 빈칸 → ✓ → ○ → 빈칸
-            let newStatus = '';
-            if (currentStatus === '') {
-                newStatus = '✓';
-            } else if (currentStatus === '✓') {
-                newStatus = '○';
-            } else {
-                newStatus = '';
-            }
-            
-            console.log(`태스크 업데이트 요청: 날짜=${date}, 인덱스=${taskIndex}, 현재상태='${currentStatus}', 새상태='${newStatus}'`);
-            
-            try {
-                const now = new Date();
-                const koreaTime = new Date(now.getTime() + (9 * 60 * 60 * 1000));
-                const clientTime = koreaTime.toTimeString().split(' ')[0]; // HH:MM:SS
-                const koreanDate = getTodayKoreaDate(); // 보정된 한국 날짜 사용
-                
-                console.log(`업데이트 파라미터: 보정된날짜=${koreanDate}, 클라이언트시간=${clientTime}`);
-                
-                // 실제 한국 날짜를 사용하여 업데이트
-                const updateUrl = `${webAppUrl}${webAppUrl.includes('?') ? '&' : '?'}action=updateTask&date=${encodeURIComponent(koreanDate)}&taskIndex=${taskIndex}&status=${encodeURIComponent(newStatus)}&clientTime=${encodeURIComponent(clientTime)}&forceDate=true`;
-                
-                showNotification('⏳ 업데이트 중...');
-                
-                const result = await jsonpRequest(updateUrl, 15000);
-                
-                console.log('업데이트 결과:', result);
-                
-                if (result && result.success) {
-                    showNotification(`✅ ${result.message}`);
-                    
-                    // 즉시 UI 업데이트 (낙관적 업데이트)
-                    const taskElement = document.querySelector(`[onclick*="updateTaskInSheet('${date}', ${taskIndex}, '${currentStatus}')"]`);
-                    if (taskElement) {
-                        const checkbox = taskElement.querySelector('.task-checkbox');
-                        const statusIcon = newStatus === '✓' ? '✓' : newStatus === '○' ? '○' : '';
-                        const statusClass = newStatus === '✓' ? 'checked' : newStatus === '○' ? 'partial' : '';
-                        const taskClass = newStatus === '✓' ? 'completed' : newStatus === '○' ? 'partial' : '';
-                        
-                        checkbox.textContent = statusIcon;
-                        checkbox.className = `task-checkbox ${statusClass}`;
-                        taskElement.className = taskElement.className.replace(/\b(completed|partial)\b/g, '').trim() + ` ${taskClass}`;
-                        
-                        // onclick 이벤트도 업데이트
-                        taskElement.setAttribute('onclick', `updateTaskInSheet('${koreanDate}', ${taskIndex}, '${newStatus}')`);
-                    }
-                    
-                    // 대시보드 자동 새로고침 (지연)
-                    setTimeout(() => {
-                        loadDashboardData();
-                    }, 2000);
-                } else {
-                    const errorMsg = result ? result.message : '알 수 없는 오류';
-                    showNotification(`❌ 업데이트 실패: ${errorMsg}`, 'error');
-                }
-            } catch (error) {
-                console.error('태스크 업데이트 오류:', error);
-                showNotification(`❌ 업데이트 오류: ${error.message}`, 'error');
-            }
+            // 대시보드 자동 새로고침 (지연)
+            setTimeout(() => {
+                loadDashboardData();
+            }, 2000);
+        } else {
+            const errorMsg = result ? result.message : '알 수 없는 오류';
+            showNotification(`❌ 업데이트 실패: ${errorMsg}`, 'error');
         }
+    } catch (error) {
+        console.error('태스크 업데이트 오류:', error);
+        showNotification(`❌ 업데이트 오류: ${error.message}`, 'error');
+    }
+}
 
         // 쿠폰 사용 함수
         async function useCouponInSheet(amount, purpose) {
@@ -1244,7 +1251,7 @@
         }
 
         // 전역 변수들
-        let webAppUrl = 'https://script.google.com/macros/s/AKfycbx8suVuVLnpNNdDwTHysH_Cjg7F1TvpG6xQuw2LOAZ1SCadL2zbCmijBte-AEKvHjip/exec'; // 실제 Web App URL로 설정
+        let webAppUrl = 'https://script.google.com/macros/s/AKfycbwyspBPInF79wl-F06QWIX33ZKke3R0ZiTYKMJZX2e6Lmv5QpFJIWBBl-HqhXsapi9V/exec'; // 실제 Web App URL로 설정
         let isConnected = false;
 
         // 초기화 함수
