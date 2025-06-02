@@ -186,7 +186,922 @@
             animation: float 3s ease-in-out infinite;
         }
         
-        @keyframes float {
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* 모바일 최적화 */
+        @media (max-width: 768px) {
+            .container { 
+                padding: 10px; 
+            }
+            .dashboard { 
+                grid-template-columns: 1fr; 
+                gap: 15px;
+            }
+            .btn { 
+                width: 100%; 
+                margin: 5px 0; 
+                padding: 15px;
+            }
+            .header h1 {
+                font-size: 2em;
+            }
+            .coupon-buttons {
+                flex-direction: column;
+            }
+            .stats {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+            .task-item {
+                padding: 15px;
+                margin: 10px 0;
+            }
+            .url-input {
+                font-size: 1em;
+            }
+            .notification {
+                right: 10px;
+                left: 10px;
+                max-width: none;
+            }
+            .weekly-days {
+                grid-template-columns: repeat(7, 1fr);
+                gap: 4px;
+            }
+            .day-card {
+                padding: 8px 4px;
+                font-size: 0.7em;
+            }
+        }
+        
+        /* 태블릿 최적화 */
+        @media (max-width: 992px) and (min-width: 769px) {
+            .dashboard {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎮 LEVELUP</h1>
+            <p>인터랙티브 30일 목표 달성 대시보드</p>
+            <div class="level-badge">📈 Level <span id="level">3</span> - 성장하는 도전자</div>
+            
+            <!-- 연결 상태 표시 -->
+            <div id="connectionStatus" class="status-indicator status-disconnected">
+                연결 확인 중...
+            </div>
+        </div>
+        
+        <!-- URL 설정 섹션 -->
+        <div class="url-config">
+            <h3>🔗 Web App URL 설정</h3>
+            <p>Google Apps Script Web App URL을 입력하세요:</p>
+            <input type="text" id="webAppUrl" class="url-input" 
+                   placeholder="https://script.google.com/macros/s/AKfycbwqwkknTizkGBiTrja3lK4GZkWjyl6FeaTT1FbtnS3JLSCjU8vwQa5ypR3jD7mzt7gi/exec"
+                   value="">
+            <br>
+            <button class="btn" onclick="testConnection()">🔍 연결 테스트</button>
+            <button class="btn" onclick="saveUrl()">💾 저장</button>
+            <button class="btn" onclick="clearUrl()">🗑️ 초기화</button>
+            <button class="btn" onclick="debugDateIssues()">🔧 날짜 디버깅</button>
+            <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
+                💡 JSONP 방식으로 CORS 문제를 해결합니다. Web App 배포 시 "모든 사용자" 액세스로 설정하세요.
+            </p>
+            <div id="connectionError" class="error-message" style="display: none;"></div>
+        </div>
+        
+        <div id="dashboard" class="dashboard">
+            <div class="loading">데이터 로딩 중...</div>
+        </div>
+        
+        <div class="motivation-message" id="motivation">
+            🔄 Web App URL을 설정하고 연결 테스트를 먼저 진행해주세요.
+        </div>
+        
+        <div style="text-align: center; margin-top: 20px;">
+            <button class="btn" onclick="refreshData()">🔄 새로고침</button>
+            <button class="btn" onclick="loadTestData()">🧪 테스트 데이터</button>
+            <button class="btn" onclick="showDebugInfo()">🔧 디버그 정보</button>
+            <span id="lastUpdated" style="margin-left: 20px; color: #666;"></span>
+        </div>
+        
+        <!-- 디버그 정보 (숨김) -->
+        <div id="debugInfo" style="display: none;" class="debug-info">
+            <h4>디버그 정보:</h4>
+            <div id="debugContent"></div>
+        </div>
+    </div>
+    
+    <script>
+        // 전역 변수
+        var webAppUrl = '';
+        var isConnected = false;
+        var debugMode = false;
+        var lastError = null;
+        var lastDashboardData = null;
+        
+        // ===== 개선된 날짜 처리 함수 =====
+        function getKoreaDateString(date = null) {
+            const targetDate = date || new Date();
+            // 한국 시간으로 명확하게 변환 (UTC+9)
+            const koreaTime = new Date(targetDate.getTime() + (9 * 60 * 60 * 1000));
+            return koreaTime.toISOString().split('T')[0];
+        }
+        
+        function getTodayKoreaDate() {
+            return getKoreaDateString();
+        }
+        
+        // 페이지 로드 시 저장된 URL 불러오기
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('페이지 로드 완료');
+            console.log('현재 한국 날짜:', getTodayKoreaDate());
+            
+            const savedUrl = localStorage.getItem('levelup_web_app_url');
+            if (savedUrl) {
+                document.getElementById('webAppUrl').value = savedUrl;
+                webAppUrl = savedUrl;
+                console.log('저장된 URL 발견:', savedUrl);
+                testConnection();
+            } else {
+                console.log('저장된 URL 없음, 테스트 데이터 로드');
+                loadTestData();
+            }
+        });
+        
+        // URL 저장
+        function saveUrl() {
+            const url = document.getElementById('webAppUrl').value.trim();
+            if (url) {
+                // URL 유효성 검사
+                if (!url.includes('script.google.com') || !url.includes('/exec')) {
+                    showNotification('❌ 올바른 Google Apps Script Web App URL이 아닙니다.\n/exec로 끝나는 URL을 입력해주세요.', 'error');
+                    return;
+                }
+                
+                localStorage.setItem('levelup_web_app_url', url);
+                webAppUrl = url;
+                showNotification('💾 URL이 저장되었습니다!');
+                testConnection();
+            } else {
+                showNotification('❌ URL을 입력해주세요.', 'error');
+            }
+        }
+        
+        // URL 초기화
+        function clearUrl() {
+            if (confirm('저장된 URL을 삭제하시겠습니까?')) {
+                localStorage.removeItem('levelup_web_app_url');
+                document.getElementById('webAppUrl').value = '';
+                webAppUrl = '';
+                isConnected = false;
+                updateConnectionStatus('연결 해제됨', false);
+                showNotification('🗑️ URL이 초기화되었습니다.');
+                loadTestData();
+            }
+        }
+        
+        // JSONP 요청 함수 (CORS 우회)
+        function jsonpRequest(url, timeout) {
+            timeout = timeout || 15000;
+            return new Promise(function(resolve, reject) {
+                const callbackName = 'jsonp_callback_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+                const script = document.createElement('script');
+                
+                const timer = setTimeout(function() {
+                    cleanup();
+                    reject(new Error('요청 시간초과 (' + timeout + 'ms)'));
+                }, timeout);
+                
+                function cleanup() {
+                    clearTimeout(timer);
+                    if (script.parentNode) {
+                        document.head.removeChild(script);
+                    }
+                    delete window[callbackName];
+                }
+                
+                window[callbackName] = function(data) {
+                    cleanup();
+                    resolve(data);
+                };
+                
+                script.onerror = function() {
+                    cleanup();
+                    reject(new Error('스크립트 로드 실패 - URL이 올바른지 확인하세요'));
+                };
+                
+                const separator = url.includes('?') ? '&' : '?';
+                script.src = url + separator + 'callback=' + callbackName + '&_=' + Date.now();
+                document.head.appendChild(script);
+            });
+        }
+        
+        // 연결 테스트 (JSONP 방식)
+        async function testConnection() {
+            const url = document.getElementById('webAppUrl').value.trim();
+            if (!url) {
+                showNotification('❌ URL을 먼저 입력해주세요.', 'error');
+                return;
+            }
+            
+            webAppUrl = url;
+            updateConnectionStatus('연결 테스트 중...', 'testing');
+            hideError();
+            
+            try {
+                console.log('JSONP 방식으로 연결 테스트 시작:', webAppUrl);
+                const testUrl = webAppUrl + (webAppUrl.includes('?') ? '&' : '?') + 'test=true';
+                const result = await jsonpRequest(testUrl, 20000);
+                
+                console.log('연결 테스트 결과:', result);
+                
+                if (result && (result.status === 'success' || result.frmProgress !== undefined)) {
+                    isConnected = true;
+                    updateConnectionStatus('연결됨', true);
+                    showNotification('✅ 연결 성공! 데이터를 불러오는 중...');
+                    
+                    // 연결 성공 후 바로 실제 데이터 로드
+                    setTimeout(function() {
+                        loadDashboardData();
+                    }, 1000);
+                    
+                } else {
+                    throw new Error('서버 응답이 올바르지 않습니다. Apps Script 코드를 확인해주세요.');
+                }
+                
+            } catch (error) {
+                console.error('연결 테스트 실패:', error);
+                lastError = error;
+                isConnected = false;
+                updateConnectionStatus('연결 실패', false);
+                
+                const errorMsg = `연결 실패: ${error.message}
+
+해결 방법:
+1. Web App URL이 정확한지 확인 (/exec로 끝나야 함)
+2. Apps Script에서 "모든 사용자" 액세스로 배포했는지 확인
+3. JSONP 지원 코드가 포함되어 있는지 확인
+4. 브라우저 개발자 도구에서 네트워크 탭 확인`;
+                
+                showError(errorMsg);
+                showNotification('❌ ' + error.message, 'error');
+                
+                // 브라우저에서 직접 URL 열기 제안
+                if (confirm('브라우저에서 Web App URL을 직접 열어서 테스트해보시겠습니까?')) {
+                    window.open(webAppUrl, '_blank');
+                }
+                
+                loadTestData();
+            }
+        }
+        
+        // 연결 상태 업데이트
+        function updateConnectionStatus(text, status) {
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.textContent = text;
+            
+            statusEl.className = 'status-indicator';
+            if (status === true) {
+                statusEl.classList.add('status-connected');
+            } else if (status === 'testing') {
+                statusEl.classList.add('status-testing');
+            } else {
+                statusEl.classList.add('status-disconnected');
+            }
+        }
+        
+        // 오류 메시지 표시/숨김
+        function showError(message) {
+            const errorEl = document.getElementById('connectionError');
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+        }
+        
+        function hideError() {
+            const errorEl = document.getElementById('connectionError');
+            errorEl.style.display = 'none';
+        }
+        
+        // 실제 데이터 로딩 (JSONP)
+        async function loadDashboardData() {
+            if (!webAppUrl || !isConnected) {
+                console.log('연결되지 않음, 테스트 데이터 로드');
+                loadTestData();
+                return;
+            }
+            
+            try {
+                console.log('대시보드 데이터 로딩 중...');
+                showDashboardLoading();
+                
+                const data = await jsonpRequest(webAppUrl, 20000);
+                
+                if (data && (data.frmProgress !== undefined || data.error)) {
+                    console.log('데이터 로드 성공:', data);
+                    lastDashboardData = data;
+                    
+                    if (data.error) {
+                        console.warn('서버에서 오류 반환:', data.error);
+                        showNotification('⚠️ 서버 오류: ' + data.error, 'warning');
+                    }
+                    
+                    // 디버그 정보 로깅
+                    if (data.debugInfo) {
+                        console.log('서버 디버그 정보:', data.debugInfo);
+                    }
+                    
+                    updateDashboard(data);
+                    updateConnectionStatus('연결됨', true);
+                    hideError();
+                } else {
+                    throw new Error('데이터 형식이 올바르지 않습니다');
+                }
+                
+            } catch (error) {
+                console.error('데이터 로딩 오류:', error);
+                lastError = error;
+                isConnected = false;
+                updateConnectionStatus('연결 실패', false);
+                showError('데이터 로딩 실패: ' + error.message);
+                showNotification('❌ 데이터 로딩 실패: ' + error.message, 'error');
+                loadTestData();
+            }
+        }
+        
+        // 로딩 상태 표시
+        function showDashboardLoading() {
+            const dashboard = document.getElementById('dashboard');
+            dashboard.innerHTML = '<div class="loading">데이터 로딩 중...</div>';
+        }
+        
+        // 테스트 데이터 로딩 (개선된 버전)
+        function loadTestData() {
+            console.log('테스트 데이터 로딩');
+            const testData = {
+                frmProgress: 52,
+                frmTarget: 180,
+                consecutiveDays: 8,
+                currentCoupons: 4.5,
+                weeklyRate: 85.7,
+                weeklyStatus: ['✓', '✓', '○', '✓', '', '', ''],
+                todayTasks: [
+                    { name: "CPA강의1", status: "✓", goal: "3개", displayText: "CPA강의1 (3개)" },
+                    { name: "CPA강의2", status: "✓", goal: "2개", displayText: "CPA강의2 (2개)" },
+                    { name: "CPA강의3", status: "○", goal: "2개", displayText: "CPA강의3 (2개)" },
+                    { name: "CPA강의4", status: "", goal: "1개", displayText: "CPA강의4 (1개)" },
+                    { name: "활동설명연습", status: "✓", goal: "45분", displayText: "활동설명연습 (45분)" },
+                    { name: "인성질문대비", status: "○", goal: "30분", displayText: "인성질문대비 (30분)" },
+                    { name: "지원이론공부", status: "", goal: "1시간", displayText: "지원이론공부 (1시간)" },
+                    { name: "영어문항연습", status: "", goal: "25문제", displayText: "영어문항연습 (25문제)" },
+                    { name: "보너스퀘스트", status: "✓", goal: "독서", displayText: "보너스퀘스트 (독서)" }
+                ],
+                lastUpdated: new Date().toLocaleString(),
+                debugInfo: {
+                    dateUsed: getTodayKoreaDate(),
+                    todayRowFound: false,
+                    mode: 'test'
+                },
+                error: null
+            };
+            
+            lastDashboardData = testData;
+            updateDashboard(testData);
+            document.getElementById('motivation').innerHTML = 
+                '🧪 <strong>테스트 모드</strong> - 실제 데이터 연결을 위해 Web App URL을 설정해주세요.';
+        }
+        
+        // ===== 개선된 태스크 상태 업데이트 함수 =====
+        async function updateTaskInSheet(date, taskIndex, currentStatus) {
+            if (!isConnected) {
+                showNotification('❌ Web App에 연결되지 않았습니다. 연결을 먼저 확인해주세요.', 'error');
+                return;
+            }
+            
+            // 날짜 검증 - 오늘 날짜와 일치하는지 확인
+            const todayDate = getTodayKoreaDate();
+            if (date !== todayDate) {
+                console.warn(`날짜 불일치: 요청=${date}, 오늘=${todayDate}`);
+                showNotification(`⚠️ 날짜가 일치하지 않습니다. 새로고침 후 다시 시도해주세요.`, 'warning');
+                setTimeout(loadDashboardData, 1000);
+                return;
+            }
+            
+            // 상태 순환: 빈칸 → ✓ → ○ → 빈칸
+            let newStatus;
+            if (currentStatus === '') {
+                newStatus = '✓';
+            } else if (currentStatus === '✓') {
+                newStatus = '○';
+            } else {
+                newStatus = '';
+            }
+            
+            console.log(`태스크 업데이트 요청: 날짜=${date}, 인덱스=${taskIndex}, 현재=${currentStatus}, 새로운=${newStatus}`);
+            
+            showNotification('🔄 업데이트 중...');
+            
+            try {
+                // GET 파라미터로 업데이트 요청
+                const updateUrl = webAppUrl + 
+                    (webAppUrl.includes('?') ? '&' : '?') + 
+                    'action=updateTask' +
+                    '&date=' + encodeURIComponent(date) +
+                    '&taskIndex=' + encodeURIComponent(taskIndex) +
+                    '&status=' + encodeURIComponent(newStatus);
+                
+                console.log('업데이트 URL:', updateUrl);
+                
+                const result = await jsonpRequest(updateUrl, 20000);
+                console.log('업데이트 결과:', result);
+                
+                if (result && result.success) {
+                    showNotification('✅ 업데이트 완료!');
+                    
+                    // 업데이트 성공 시 로컬 데이터도 즉시 반영
+                    if (lastDashboardData && lastDashboardData.todayTasks && lastDashboardData.todayTasks[taskIndex]) {
+                        lastDashboardData.todayTasks[taskIndex].status = newStatus;
+                        updateDashboard(lastDashboardData);
+                    }
+                    
+                    // 2초 후 서버에서 최신 데이터 새로고침
+                    setTimeout(function() {
+                        loadDashboardData();
+                    }, 2000);
+                } else {
+                    const errorMsg = result ? result.message : '알 수 없는 오류';
+                    showNotification('❌ 오류: ' + errorMsg, 'error');
+                }
+                
+            } catch (error) {
+                console.error('업데이트 오류:', error);
+                lastError = error;
+                showNotification('❌ 업데이트 실패: ' + error.message, 'error');
+            }
+        }
+        
+        // 쿠폰 사용 (GET 방식)
+        async function useCouponInSheet(amount, purpose) {
+            if (!isConnected) {
+                showNotification('❌ Web App에 연결되지 않았습니다. 연결을 먼저 확인해주세요.', 'error');
+                return;
+            }
+            
+            if (!confirm(purpose + '을(를) 사용하시겠습니까? (' + amount + '쿠폰)')) {
+                return;
+            }
+            
+            showNotification('🎁 쿠폰 사용 중...');
+            
+            try {
+                console.log('쿠폰 사용 요청:', {
+                    action: 'useCoupon',
+                    amount: amount,
+                    purpose: purpose
+                });
+                
+                // GET 파라미터로 쿠폰 사용 요청
+                const couponUrl = webAppUrl + 
+                    (webAppUrl.includes('?') ? '&' : '?') + 
+                    'action=useCoupon' +
+                    '&amount=' + encodeURIComponent(amount) +
+                    '&purpose=' + encodeURIComponent(purpose);
+                
+                const result = await jsonpRequest(couponUrl, 20000);
+                console.log('쿠폰 사용 결과:', result);
+                
+                if (result && result.success) {
+                    showNotification('🎁 ' + purpose + ' 사용 완료!');
+                    
+                    // 1초 후 데이터 새로고침
+                    setTimeout(function() {
+                        loadDashboardData();
+                    }, 1000);
+                } else {
+                    const errorMsg = result ? result.message : '쿠폰 사용 실패';
+                    showNotification('❌ ' + errorMsg, 'error');
+                }
+                
+            } catch (error) {
+                console.error('쿠폰 사용 오류:', error);
+                lastError = error;
+                showNotification('❌ 쿠폰 사용 실패: ' + error.message, 'error');
+            }
+        }
+        
+        // ===== 날짜 디버깅 함수 =====
+        async function debugDateIssues() {
+            if (!isConnected) {
+                showNotification('❌ Web App에 연결되지 않았습니다.', 'error');
+                return;
+            }
+            
+            showNotification('🔧 날짜 디버깅 중...');
+            
+            try {
+                // 현재 클라이언트 날짜 정보 수집
+                const now = new Date();
+                const clientInfo = {
+                    raw: now.toString(),
+                    iso: now.toISOString(),
+                    korea: getTodayKoreaDate(),
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    offset: now.getTimezoneOffset()
+                };
+                
+                console.log('클라이언트 날짜 정보:', clientInfo);
+                
+                // 서버에서 디버그 정보 요청
+                const debugUrl = webAppUrl + (webAppUrl.includes('?') ? '&' : '?') + 'debug=date';
+                const serverDebug = await jsonpRequest(debugUrl, 15000);
+                
+                console.log('서버 디버그 정보:', serverDebug);
+                
+                // 디버그 정보 표시
+                const debugHtml = `
+                    <div class="debug-item">
+                        <strong>클라이언트 정보:</strong><br>
+                        현재 시간: ${clientInfo.raw}<br>
+                        ISO 시간: ${clientInfo.iso}<br>
+                        한국 날짜: ${clientInfo.korea}<br>
+                        시간대: ${clientInfo.timezone}<br>
+                        UTC 오프셋: ${clientInfo.offset}분
+                    </div>
+                    <div class="debug-item">
+                        <strong>서버 정보:</strong><br>
+                        ${serverDebug ? JSON.stringify(serverDebug, null, 2) : '서버 응답 없음'}
+                    </div>
+                    <div class="debug-item">
+                        <strong>마지막 대시보드 데이터:</strong><br>
+                        ${lastDashboardData && lastDashboardData.debugInfo ? 
+                          JSON.stringify(lastDashboardData.debugInfo, null, 2) : '없음'}
+                    </div>
+                `;
+                
+                document.getElementById('debugContent').innerHTML = debugHtml;
+                document.getElementById('debugInfo').style.display = 'block';
+                
+                showNotification('🔧 날짜 디버깅 완료! 아래 정보를 확인하세요.');
+                
+            } catch (error) {
+                console.error('날짜 디버깅 오류:', error);
+                showNotification('❌ 디버깅 실패: ' + error.message, 'error');
+            }
+        }
+        
+        // 알림 표시 (개선된 버전)
+        function showNotification(message, type) {
+            type = type || 'success';
+            
+            // 기존 알림 제거
+            const existingNotification = document.querySelector('.notification');
+            if (existingNotification) {
+                existingNotification.remove();
+            }
+            
+            const notification = document.createElement('div');
+            notification.className = 'notification ' + type;
+            notification.textContent = message;
+            
+            document.body.appendChild(notification);
+            
+            // 자동으로 사라지는 시간 설정 (오류는 더 오래)
+            const timeout = type === 'error' ? 8000 : 4000;
+            setTimeout(function() {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, timeout);
+        }
+        
+        // ===== 대시보드 업데이트 (날짜 정보 추가) =====
+        function updateDashboard(data) {
+            const dashboard = document.getElementById('dashboard');
+            const today = getTodayKoreaDate();
+            
+            console.log(`대시보드 업데이트: 클라이언트 날짜=${today}, 서버 날짜=${data.debugInfo ? data.debugInfo.dateUsed : '불명'}`);
+            
+            // 오류 메시지 처리
+            if (data.error) {
+                dashboard.innerHTML = `
+                    <div class="card">
+                        <h3>⚠️ 데이터 로딩 오류</h3>
+                        <div class="error-message">
+                            ${data.error}
+                        </div>
+                        <p>아래는 사용 가능한 데이터입니다:</p>
+                    </div>
+                `;
+            }
+            
+            const interactiveHint = isConnected ? 
+                '💡 클릭해서 완료 상태를 변경할 수 있습니다 (빈칸 → ✓ → ○ → 빈칸)' : 
+                '⚠️ 테스트 모드 - 실제 업데이트는 Web App 연결 후 가능합니다';
+            
+            const couponHint = isConnected ? 
+                '💡 버튼을 클릭해서 쿠폰을 사용할 수 있습니다' : 
+                '⚠️ 테스트 모드 - 실제 사용은 Web App 연결 후 가능합니다';
+            
+            const progressPercentage = (data.frmProgress / data.frmTarget * 100).toFixed(1);
+            const remainingToTarget = Math.max(0, data.frmTarget - data.frmProgress);
+            const remainingToGolden = Math.max(0, 5 - data.currentCoupons);
+            
+            // 날짜 불일치 경고 표시
+            let dateWarning = '';
+            if (data.debugInfo && data.debugInfo.dateUsed && data.debugInfo.dateUsed !== today) {
+                dateWarning = `
+                    <div class="error-message" style="margin-bottom: 15px;">
+                        ⚠️ 날짜 불일치 감지!<br>
+                        클라이언트: ${today}<br>
+                        서버: ${data.debugInfo.dateUsed}<br>
+                        새로고침을 시도하거나 날짜 디버깅 버튼을 클릭하세요.
+                    </div>
+                `;
+            }
+            
+            const dashboardContent = `
+                ${dateWarning}
+                
+                <!-- 전체 진행률 카드 -->
+                <div class="card">
+                    <h3>🎯 전체 목표 진행률</h3>
+                    <div>
+                        <p><strong>강의 수강 진도</strong></p>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${progressPercentage}%">
+                                ${data.frmProgress}/${data.frmTarget} (${progressPercentage}%)
+                            </div>
+                        </div>
+                        <p style="color: #666; font-size: 0.9em; margin-top: 5px;">
+                            목표까지 ${remainingToTarget}개 남음
+                        </p>
+                    </div>
+                    <div class="stats">
+                        <div class="stat-item">
+                            <div class="stat-number">${data.consecutiveDays}</div>
+                            <div class="stat-label">연속 성공일</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number">${data.currentCoupons}</div>
+                            <div class="stat-label">보유 쿠폰</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 인터랙티브 오늘의 할 일 카드 -->
+                <div class="card">
+                    <h3>✅ 오늘의 할 일 (${today})</h3>
+                    <ul class="task-list">
+                        ${data.todayTasks.map(function(task, index) {
+                            const statusClass = task.status === '✓' ? 'completed' : task.status === '○' ? 'partial' : '';
+                            const checkboxClass = task.status === '✓' ? 'checked' : task.status === '○' ? 'partial' : '';
+                            const statusIcon = task.status === '✓' ? '✓' : task.status === '○' ? '○' : '';
+                            
+                            return `<li class="task-item ${statusClass}" 
+                                onclick="updateTaskInSheet('${today}', ${index}, '${task.status}')">
+                                <div class="task-checkbox ${checkboxClass}">${statusIcon}</div>
+                                <span>${task.displayText}</span>
+                            </li>`;
+                        }).join('')}
+                    </ul>
+                    <div class="interactive-hint">
+                        ${interactiveHint}
+                    </div>
+                </div>
+                
+                <!-- 인터랙티브 쿠폰 카드 -->
+                <div class="card">
+                    <h3>🎁 쿠폰 현황</h3>
+                    <div class="coupon-section">
+                        ${Array.from({length: Math.floor(data.currentCoupons)}, function(_, i) {
+                            return '<div class="coupon">🎟️ 쿠폰 ' + (i+1) + '</div>';
+                        }).join('')}
+                        ${data.currentCoupons % 1 !== 0 ? '<div class="coupon">🎫 0.5</div>' : ''}
+                    </div>
+                    <p><strong>보유 쿠폰: ${data.currentCoupons}개</strong></p>
+                    
+                    <div class="reward-milestone">
+                        🌟 골든휴식권까지 ${remainingToGolden.toFixed(1)}개 남음!
+                    </div>
+                    
+                    <!-- 쿠폰 사용 버튼들 -->
+                    <div class="coupon-buttons">
+                        <button class="btn" onclick="useCouponInSheet(1, '넷플릭스 30분')" 
+                                ${data.currentCoupons < 1 || !isConnected ? 'disabled' : ''}>
+                            🎬 넷플릭스 30분 (1쿠폰)
+                        </button>
+                        <button class="btn" onclick="useCouponInSheet(2, '공부시간 1시간 감축')"
+                                ${data.currentCoupons < 2 || !isConnected ? 'disabled' : ''}>
+                            ⏰ 1시간 감축 (2쿠폰)
+                        </button>
+                        <button class="btn" onclick="useCouponInSheet(3, '하루 면제권')"
+                                ${data.currentCoupons < 3 || !isConnected ? 'disabled' : ''}>
+                            🆓 하루 면제권 (3쿠폰)
+                        </button>
+                        <button class="btn" onclick="useCouponInSheet(5, '골든휴식권')"
+                                ${data.currentCoupons < 5 || !isConnected ? 'disabled' : ''}>
+                            🌟 골든휴식권 (5쿠폰)
+                        </button>
+                    </div>
+                    <div class="interactive-hint">
+                        ${couponHint}
+                    </div>
+                </div>
+                
+                <!-- 이번 주 진행률 카드 -->
+                <div class="card">
+                    <h3>📅 이번 주 진행률</h3>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${data.weeklyRate}%">
+                            ${data.weeklyRate.toFixed(1)}%
+                        </div>
+                    </div>
+                    
+                    <!-- 요일별 달성 상태 -->
+                    <div style="margin: 15px 0;">
+                        <h4 style="margin-bottom: 10px; color: #5a67d8;">요일별 달성 현황</h4>
+                        <div class="weekly-days">
+                            ${['월', '화', '수', '목', '금', '토', '일'].map((day, index) => {
+                                const status = data.weeklyStatus ? data.weeklyStatus[index] : '';
+                                const statusIcon = status === '✓' ? '✅' : status === '○' ? '🔶' : '⭕';
+                                const statusText = status === '✓' ? '달성' : status === '○' ? '부분달성' : '미달성';
+                                const cardClass = status === '✓' ? 'achieved' : status === '○' ? 'partial' : 'missed';
+                                
+                                return `
+                                    <div class="day-card ${cardClass}">
+                                        <div style="font-weight: bold;">${day}</div>
+                                        <div style="font-size: 1.2em; margin: 2px 0;">${statusIcon}</div>
+                                        <div style="font-size: 0.7em;">${statusText}</div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                    
+                    <div class="stats">
+                        <div class="stat-item">
+                            <div class="stat-number">${data.weeklyRate >= 80 ? '달성' : '진행중'}</div>
+                            <div class="stat-label">주간 목표</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number">${data.weeklyRate >= 100 ? '2' : '0'}</div>
+                            <div class="stat-label">보너스 쿠폰</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 디버그 정보 카드 (연결된 경우만) -->
+                ${isConnected && data.debugInfo ? `
+                    <div class="card">
+                        <h3>🔧 시스템 정보</h3>
+                        <div class="debug-info">
+                            <div class="debug-item">
+                                <strong>서버 날짜:</strong> ${data.debugInfo.dateUsed || '불명'}
+                            </div>
+                            <div class="debug-item">
+                                <strong>클라이언트 날짜:</strong> ${today}
+                            </div>
+                            <div class="debug-item">
+                                <strong>오늘 데이터 발견:</strong> ${data.debugInfo.todayRowFound ? '✅ 예' : '❌ 아니오'}
+                            </div>
+                            <div class="debug-item">
+                                <strong>강의 태스크 인덱스:</strong> ${data.debugInfo.lectureTaskIndices ? data.debugInfo.lectureTaskIndices.join(', ') : '불명'}
+                            </div>
+                            <div class="debug-item">
+                                <strong>계산된 강의 수:</strong> ${data.debugInfo.totalLecturesCalculated || data.frmProgress}
+                            </div>
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+            
+            if (data.error) {
+                dashboard.innerHTML += dashboardContent;
+            } else {
+                dashboard.innerHTML = dashboardContent;
+            }
+            
+            // 동기부여 메시지 업데이트
+            if (isConnected) {
+                const motivationMessages = [
+                    `🔥 현재 ${data.consecutiveDays}일 연속 성공! 이 페이스 유지하자!`,
+                    `💪 강의 ${data.frmProgress}개 완료! 목표까지 ${remainingToTarget}개 남음!`,
+                    `🎁 쿠폰 ${data.currentCoupons}개 보유! 골든휴식권까지 ${remainingToGolden.toFixed(1)}개!`,
+                    `📈 이번주 ${data.weeklyRate.toFixed(1)}% 달성! 계속 화이팅!`
+                ];
+                
+                document.getElementById('motivation').textContent = 
+                    motivationMessages[Math.floor(Math.random() * motivationMessages.length)];
+            }
+            
+            document.getElementById('lastUpdated').textContent = 
+                `마지막 업데이트: ${data.lastUpdated}`;
+        }
+        
+        // 데이터 새로고침
+        function refreshData() {
+            if (isConnected) {
+                document.getElementById('motivation').textContent = '🔄 새로고침 중...';
+                loadDashboardData();
+            } else {
+                showNotification('❌ Web App에 연결되지 않았습니다.', 'error');
+                loadTestData();
+            }
+        }
+        
+        // 디버그 정보 표시/숨김
+        function showDebugInfo() {
+            debugMode = !debugMode;
+            const debugEl = document.getElementById('debugInfo');
+            const debugContent = document.getElementById('debugContent');
+            
+            if (debugMode) {
+                debugEl.style.display = 'block';
+                debugContent.innerHTML = `
+                    <div class="debug-item">
+                        <strong>연결 상태:</strong> ${isConnected ? '연결됨' : '연결 안됨'}
+                    </div>
+                    <div class="debug-item">
+                        <strong>Web App URL:</strong> ${webAppUrl || '설정되지 않음'}
+                    </div>
+                    <div class="debug-item">
+                        <strong>저장된 URL:</strong> ${localStorage.getItem('levelup_web_app_url') || '없음'}
+                    </div>
+                    <div class="debug-item">
+                        <strong>현재 시간:</strong> ${new Date().toLocaleString()}
+                    </div>
+                    <div class="debug-item">
+                        <strong>한국 날짜:</strong> ${getTodayKoreaDate()}
+                    </div>
+                    <div class="debug-item">
+                        <strong>마지막 오류:</strong> ${lastError ? lastError.message : '없음'}
+                    </div>
+                    <div class="debug-item">
+                        <strong>브라우저:</strong> ${navigator.userAgent}
+                    </div>
+                    <div class="debug-item">
+                        <strong>화면 크기:</strong> ${window.innerWidth} x ${window.innerHeight}
+                    </div>
+                    <div class="debug-item">
+                        <strong>마지막 서버 데이터:</strong><br>
+                        <pre style="font-size: 0.8em; background: #f0f0f0; padding: 5px; border-radius: 3px; max-height: 200px; overflow-y: auto;">
+${lastDashboardData ? JSON.stringify(lastDashboardData, null, 2) : '없음'}
+                        </pre>
+                    </div>
+                `;
+            } else {
+                debugEl.style.display = 'none';
+            }
+        }
+        
+        // 자동 새로고침 (5분마다, 연결된 경우에만)
+        setInterval(function() {
+            if (isConnected && !debugMode) {
+                console.log('자동 새로고침 실행');
+                loadDashboardData();
+            }
+        }, 5 * 60 * 1000);
+        
+        // 페이지 포커스시 새로고침
+        window.addEventListener('focus', function() {
+            if (isConnected) {
+                console.log('페이지 포커스 감지, 새로고침');
+                setTimeout(loadDashboardData, 1000);
+            }
+        });
+        
+        // 에러 핸들링 개선
+        window.addEventListener('error', function(e) {
+            console.error('전역 오류 감지:', e.error);
+            lastError = e.error;
+            
+            if (debugMode) {
+                showNotification('⚠️ JavaScript 오류가 발생했습니다. 디버그 정보를 확인하세요.', 'warning');
+            }
+        });
+        
+        // 온라인/오프라인 상태 감지
+        window.addEventListener('online', function() {
+            showNotification('🌐 인터넷 연결이 복구되었습니다.');
+            if (webAppUrl && !isConnected) {
+                setTimeout(testConnection, 2000);
+            }
+        });
+        
+        window.addEventListener('offline', function() {
+            showNotification('📡 인터넷 연결이 끊어졌습니다.', 'warning');
+            isConnected = false;
+            updateConnectionStatus('오프라인', false);
+        });
+    </script>
+</body>
+</html> float {
             0%, 100% { transform: translateY(0px); }
             50% { transform: translateY(-5px); }
         }
@@ -389,6 +1304,29 @@
             color: #a0aec0;
         }
         
+        /* 디버그 정보 스타일 */
+        .debug-info {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 0.85em;
+        }
+        
+        .debug-info h4 {
+            color: #5a67d8;
+            margin-bottom: 10px;
+        }
+        
+        .debug-item {
+            margin: 5px 0;
+            padding: 5px;
+            background: white;
+            border-radius: 4px;
+        }
+        
         /* 로딩 애니메이션 */
         .loading {
             text-align: center;
@@ -408,756 +1346,4 @@
             margin-left: 10px;
         }
         
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        /* 모바일 최적화 */
-        @media (max-width: 768px) {
-            .container { 
-                padding: 10px; 
-            }
-            .dashboard { 
-                grid-template-columns: 1fr; 
-                gap: 15px;
-            }
-            .btn { 
-                width: 100%; 
-                margin: 5px 0; 
-                padding: 15px;
-            }
-            .header h1 {
-                font-size: 2em;
-            }
-            .coupon-buttons {
-                flex-direction: column;
-            }
-            .stats {
-                grid-template-columns: 1fr;
-                gap: 10px;
-            }
-            .task-item {
-                padding: 15px;
-                margin: 10px 0;
-            }
-            .url-input {
-                font-size: 1em;
-            }
-            .notification {
-                right: 10px;
-                left: 10px;
-                max-width: none;
-            }
-            .weekly-days {
-                grid-template-columns: repeat(7, 1fr);
-                gap: 4px;
-            }
-            .day-card {
-                padding: 8px 4px;
-                font-size: 0.7em;
-            }
-        }
-        
-        /* 태블릿 최적화 */
-        @media (max-width: 992px) and (min-width: 769px) {
-            .dashboard {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎮 LEVELUP</h1>
-            <p>인터랙티브 30일 목표 달성 대시보드</p>
-            <div class="level-badge">📈 Level <span id="level">3</span> - 성장하는 도전자</div>
-            
-            <!-- 연결 상태 표시 -->
-            <div id="connectionStatus" class="status-indicator status-disconnected">
-                연결 확인 중...
-            </div>
-        </div>
-        
-        <!-- URL 설정 섹션 -->
-        <div class="url-config">
-            <h3>🔗 Web App URL 설정</h3>
-            <p>Google Apps Script Web App URL을 입력하세요:</p>
-            <input type="text" id="webAppUrl" class="url-input" 
-                   placeholder="https://script.google.com/macros/s/AKfycbyqxJhIwoGH0-N9OEaT5lM8jutwWQAWExUBXqYKNZ2DNep-Riho3kIcADXkjgUIx7cg/exec"
-                   value="">
-            <br>
-            <button class="btn" onclick="testConnection()">🔍 연결 테스트</button>
-            <button class="btn" onclick="saveUrl()">💾 저장</button>
-            <button class="btn" onclick="clearUrl()">🗑️ 초기화</button>
-            <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
-                💡 JSONP 방식으로 CORS 문제를 해결합니다. Web App 배포 시 "모든 사용자" 액세스로 설정하세요.
-            </p>
-            <div id="connectionError" class="error-message" style="display: none;"></div>
-        </div>
-        
-        <div id="dashboard" class="dashboard">
-            <div class="loading">데이터 로딩 중...</div>
-        </div>
-        
-        <div class="motivation-message" id="motivation">
-            🔄 Web App URL을 설정하고 연결 테스트를 먼저 진행해주세요.
-        </div>
-        
-        <div style="text-align: center; margin-top: 20px;">
-            <button class="btn" onclick="refreshData()">🔄 새로고침</button>
-            <button class="btn" onclick="loadTestData()">🧪 테스트 데이터</button>
-            <button class="btn" onclick="showDebugInfo()">🔧 디버그 정보</button>
-            <span id="lastUpdated" style="margin-left: 20px; color: #666;"></span>
-        </div>
-        
-        <!-- 디버그 정보 (숨김) -->
-        <div id="debugInfo" style="display: none; background: #f7fafc; padding: 20px; border-radius: 10px; margin-top: 20px; font-family: monospace; font-size: 0.8em;">
-            <h4>디버그 정보:</h4>
-            <div id="debugContent"></div>
-        </div>
-    </div>
-    
-    <script>
-        // 전역 변수
-        var webAppUrl = '';
-        var isConnected = false;
-        var debugMode = false;
-        var lastError = null;
-        
-        // 페이지 로드 시 저장된 URL 불러오기
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('페이지 로드 완료');
-            
-            const savedUrl = localStorage.getItem('levelup_web_app_url');
-            if (savedUrl) {
-                document.getElementById('webAppUrl').value = savedUrl;
-                webAppUrl = savedUrl;
-                console.log('저장된 URL 발견:', savedUrl);
-                testConnection();
-            } else {
-                console.log('저장된 URL 없음, 테스트 데이터 로드');
-                loadTestData();
-            }
-        });
-        
-        // URL 저장
-        function saveUrl() {
-            const url = document.getElementById('webAppUrl').value.trim();
-            if (url) {
-                // URL 유효성 검사
-                if (!url.includes('script.google.com') || !url.includes('/exec')) {
-                    showNotification('❌ 올바른 Google Apps Script Web App URL이 아닙니다.\n/exec로 끝나는 URL을 입력해주세요.', 'error');
-                    return;
-                }
-                
-                localStorage.setItem('levelup_web_app_url', url);
-                webAppUrl = url;
-                showNotification('💾 URL이 저장되었습니다!');
-                testConnection();
-            } else {
-                showNotification('❌ URL을 입력해주세요.', 'error');
-            }
-        }
-        
-        // URL 초기화
-        function clearUrl() {
-            if (confirm('저장된 URL을 삭제하시겠습니까?')) {
-                localStorage.removeItem('levelup_web_app_url');
-                document.getElementById('webAppUrl').value = '';
-                webAppUrl = '';
-                isConnected = false;
-                updateConnectionStatus('연결 해제됨', false);
-                showNotification('🗑️ URL이 초기화되었습니다.');
-                loadTestData();
-            }
-        }
-        
-        // JSONP 요청 함수 (CORS 우회)
-        function jsonpRequest(url, timeout) {
-            timeout = timeout || 15000;
-            return new Promise(function(resolve, reject) {
-                const callbackName = 'jsonp_callback_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
-                const script = document.createElement('script');
-                
-                const timer = setTimeout(function() {
-                    cleanup();
-                    reject(new Error('요청 시간초과 (' + timeout + 'ms)'));
-                }, timeout);
-                
-                function cleanup() {
-                    clearTimeout(timer);
-                    if (script.parentNode) {
-                        document.head.removeChild(script);
-                    }
-                    delete window[callbackName];
-                }
-                
-                window[callbackName] = function(data) {
-                    cleanup();
-                    resolve(data);
-                };
-                
-                script.onerror = function() {
-                    cleanup();
-                    reject(new Error('스크립트 로드 실패 - URL이 올바른지 확인하세요'));
-                };
-                
-                const separator = url.includes('?') ? '&' : '?';
-                script.src = url + separator + 'callback=' + callbackName + '&_=' + Date.now();
-                document.head.appendChild(script);
-            });
-        }
-        
-        // 연결 테스트 (JSONP 방식)
-        async function testConnection() {
-            const url = document.getElementById('webAppUrl').value.trim();
-            if (!url) {
-                showNotification('❌ URL을 먼저 입력해주세요.', 'error');
-                return;
-            }
-            
-            webAppUrl = url;
-            updateConnectionStatus('연결 테스트 중...', 'testing');
-            hideError();
-            
-            try {
-                console.log('JSONP 방식으로 연결 테스트 시작:', webAppUrl);
-                const testUrl = webAppUrl + (webAppUrl.includes('?') ? '&' : '?') + 'test=true';
-                const result = await jsonpRequest(testUrl, 20000);
-                
-                console.log('연결 테스트 결과:', result);
-                
-                if (result && (result.status === 'success' || result.frmProgress !== undefined)) {
-                    isConnected = true;
-                    updateConnectionStatus('연결됨', true);
-                    showNotification('✅ 연결 성공! 데이터를 불러오는 중...');
-                    
-                    // 연결 성공 후 바로 실제 데이터 로드
-                    setTimeout(function() {
-                        loadDashboardData();
-                    }, 1000);
-                    
-                } else {
-                    throw new Error('서버 응답이 올바르지 않습니다. Apps Script 코드를 확인해주세요.');
-                }
-                
-            } catch (error) {
-                console.error('연결 테스트 실패:', error);
-                lastError = error;
-                isConnected = false;
-                updateConnectionStatus('연결 실패', false);
-                
-                const errorMsg = `연결 실패: ${error.message}
-
-해결 방법:
-1. Web App URL이 정확한지 확인 (/exec로 끝나야 함)
-2. Apps Script에서 "모든 사용자" 액세스로 배포했는지 확인
-3. JSONP 지원 코드가 포함되어 있는지 확인
-4. 브라우저 개발자 도구에서 네트워크 탭 확인`;
-                
-                showError(errorMsg);
-                showNotification('❌ ' + error.message, 'error');
-                
-                // 브라우저에서 직접 URL 열기 제안
-                if (confirm('브라우저에서 Web App URL을 직접 열어서 테스트해보시겠습니까?')) {
-                    window.open(webAppUrl, '_blank');
-                }
-                
-                loadTestData();
-            }
-        }
-        
-        // 연결 상태 업데이트
-        function updateConnectionStatus(text, status) {
-            const statusEl = document.getElementById('connectionStatus');
-            statusEl.textContent = text;
-            
-            statusEl.className = 'status-indicator';
-            if (status === true) {
-                statusEl.classList.add('status-connected');
-            } else if (status === 'testing') {
-                statusEl.classList.add('status-testing');
-            } else {
-                statusEl.classList.add('status-disconnected');
-            }
-        }
-        
-        // 오류 메시지 표시/숨김
-        function showError(message) {
-            const errorEl = document.getElementById('connectionError');
-            errorEl.textContent = message;
-            errorEl.style.display = 'block';
-        }
-        
-        function hideError() {
-            const errorEl = document.getElementById('connectionError');
-            errorEl.style.display = 'none';
-        }
-        
-        // 실제 데이터 로딩 (JSONP)
-        async function loadDashboardData() {
-            if (!webAppUrl || !isConnected) {
-                console.log('연결되지 않음, 테스트 데이터 로드');
-                loadTestData();
-                return;
-            }
-            
-            try {
-                console.log('대시보드 데이터 로딩 중...');
-                showDashboardLoading();
-                
-                const data = await jsonpRequest(webAppUrl, 20000);
-                
-                if (data && (data.frmProgress !== undefined || data.error)) {
-                    console.log('데이터 로드 성공:', data);
-                    
-                    if (data.error) {
-                        console.warn('서버에서 오류 반환:', data.error);
-                        showNotification('⚠️ 서버 오류: ' + data.error, 'warning');
-                    }
-                    
-                    updateDashboard(data);
-                    updateConnectionStatus('연결됨', true);
-                    hideError();
-                } else {
-                    throw new Error('데이터 형식이 올바르지 않습니다');
-                }
-                
-            } catch (error) {
-                console.error('데이터 로딩 오류:', error);
-                lastError = error;
-                isConnected = false;
-                updateConnectionStatus('연결 실패', false);
-                showError('데이터 로딩 실패: ' + error.message);
-                showNotification('❌ 데이터 로딩 실패: ' + error.message, 'error');
-                loadTestData();
-            }
-        }
-        
-        // 로딩 상태 표시
-        function showDashboardLoading() {
-            const dashboard = document.getElementById('dashboard');
-            dashboard.innerHTML = '<div class="loading">데이터 로딩 중...</div>';
-        }
-        
-        // 테스트 데이터 로딩 (개선된 버전)
-        function loadTestData() {
-            console.log('테스트 데이터 로딩');
-            const testData = {
-                frmProgress: 52,
-                frmTarget: 180,
-                consecutiveDays: 8,
-                currentCoupons: 4.5,
-                weeklyRate: 85.7,
-                weeklyStatus: ['✓', '✓', '○', '✓', '', '', ''],
-                todayTasks: [
-                    { name: "CPA강의1", status: "✓", goal: "3개", displayText: "CPA강의1 (3개)" },
-                    { name: "CPA강의2", status: "✓", goal: "2개", displayText: "CPA강의2 (2개)" },
-                    { name: "CPA강의3", status: "○", goal: "2개", displayText: "CPA강의3 (2개)" },
-                    { name: "CPA강의4", status: "", goal: "1개", displayText: "CPA강의4 (1개)" },
-                    { name: "활동설명연습", status: "✓", goal: "45분", displayText: "활동설명연습 (45분)" },
-                    { name: "인성질문대비", status: "○", goal: "30분", displayText: "인성질문대비 (30분)" },
-                    { name: "지원이론공부", status: "", goal: "1시간", displayText: "지원이론공부 (1시간)" },
-                    { name: "영어문항연습", status: "", goal: "25문제", displayText: "영어문항연습 (25문제)" },
-                    { name: "보너스퀘스트", status: "✓", goal: "독서", displayText: "보너스퀘스트 (독서)" }
-                ],
-                lastUpdated: new Date().toLocaleString(),
-                error: null
-            };
-            
-            updateDashboard(testData);
-            document.getElementById('motivation').innerHTML = 
-                '🧪 <strong>테스트 모드</strong> - 실제 데이터 연결을 위해 Web App URL을 설정해주세요.';
-        }
-        
-        // 태스크 상태 업데이트 (순환 방식: '' → '✓' → '○' → '')
-        async function updateTaskInSheet(date, taskIndex, currentStatus) {
-            if (!isConnected) {
-                showNotification('❌ Web App에 연결되지 않았습니다. 연결을 먼저 확인해주세요.', 'error');
-                return;
-            }
-            
-            // 상태 순환: 빈칸 → ✓ → ○ → 빈칸
-            let newStatus;
-            if (currentStatus === '') {
-                newStatus = '✓';
-            } else if (currentStatus === '✓') {
-                newStatus = '○';
-            } else {
-                newStatus = '';
-            }
-            
-            showNotification('🔄 업데이트 중...');
-            
-            try {
-                console.log('태스크 업데이트 요청:', {
-                    action: 'updateTask',
-                    date: date,
-                    taskIndex: taskIndex,
-                    status: newStatus
-                });
-                
-                // GET 파라미터로 업데이트 요청
-                const updateUrl = webAppUrl + 
-                    (webAppUrl.includes('?') ? '&' : '?') + 
-                    'action=updateTask' +
-                    '&date=' + encodeURIComponent(date) +
-                    '&taskIndex=' + encodeURIComponent(taskIndex) +
-                    '&status=' + encodeURIComponent(newStatus);
-                
-                const result = await jsonpRequest(updateUrl, 20000);
-                console.log('업데이트 결과:', result);
-                
-                if (result && result.success) {
-                    showNotification('✅ 업데이트 완료!');
-                    
-                    // 1초 후 데이터 새로고침
-                    setTimeout(function() {
-                        loadDashboardData();
-                    }, 1000);
-                } else {
-                    const errorMsg = result ? result.message : '알 수 없는 오류';
-                    showNotification('❌ 오류: ' + errorMsg, 'error');
-                }
-                
-            } catch (error) {
-                console.error('업데이트 오류:', error);
-                lastError = error;
-                showNotification('❌ 업데이트 실패: ' + error.message, 'error');
-            }
-        }
-        
-        // 쿠폰 사용 (GET 방식)
-        async function useCouponInSheet(amount, purpose) {
-            if (!isConnected) {
-                showNotification('❌ Web App에 연결되지 않았습니다. 연결을 먼저 확인해주세요.', 'error');
-                return;
-            }
-            
-            if (!confirm(purpose + '을(를) 사용하시겠습니까? (' + amount + '쿠폰)')) {
-                return;
-            }
-            
-            showNotification('🎁 쿠폰 사용 중...');
-            
-            try {
-                console.log('쿠폰 사용 요청:', {
-                    action: 'useCoupon',
-                    amount: amount,
-                    purpose: purpose
-                });
-                
-                // GET 파라미터로 쿠폰 사용 요청
-                const couponUrl = webAppUrl + 
-                    (webAppUrl.includes('?') ? '&' : '?') + 
-                    'action=useCoupon' +
-                    '&amount=' + encodeURIComponent(amount) +
-                    '&purpose=' + encodeURIComponent(purpose);
-                
-                const result = await jsonpRequest(couponUrl, 20000);
-                console.log('쿠폰 사용 결과:', result);
-                
-                if (result && result.success) {
-                    showNotification('🎁 ' + purpose + ' 사용 완료!');
-                    
-                    // 1초 후 데이터 새로고침
-                    setTimeout(function() {
-                        loadDashboardData();
-                    }, 1000);
-                } else {
-                    const errorMsg = result ? result.message : '쿠폰 사용 실패';
-                    showNotification('❌ ' + errorMsg, 'error');
-                }
-                
-            } catch (error) {
-                console.error('쿠폰 사용 오류:', error);
-                lastError = error;
-                showNotification('❌ 쿠폰 사용 실패: ' + error.message, 'error');
-            }
-        }
-        
-        // 알림 표시 (개선된 버전)
-        function showNotification(message, type) {
-            type = type || 'success';
-            
-            // 기존 알림 제거
-            const existingNotification = document.querySelector('.notification');
-            if (existingNotification) {
-                existingNotification.remove();
-            }
-            
-            const notification = document.createElement('div');
-            notification.className = 'notification ' + type;
-            notification.textContent = message;
-            
-            document.body.appendChild(notification);
-            
-            // 자동으로 사라지는 시간 설정 (오류는 더 오래)
-            const timeout = type === 'error' ? 8000 : 4000;
-            setTimeout(function() {
-                if (notification.parentNode) {
-                    notification.remove();
-                }
-            }, timeout);
-        }
-        
-        // 대시보드 업데이트 (개선된 버전)
-        function updateDashboard(data) {
-            const dashboard = document.getElementById('dashboard');
-            const today = new Date().toISOString().split('T')[0];
-            
-            // 오류 메시지 처리
-            if (data.error) {
-                dashboard.innerHTML = `
-                    <div class="card">
-                        <h3>⚠️ 데이터 로딩 오류</h3>
-                        <div class="error-message">
-                            ${data.error}
-                        </div>
-                        <p>아래는 사용 가능한 데이터입니다:</p>
-                    </div>
-                `;
-            }
-            
-            const interactiveHint = isConnected ? 
-                '💡 클릭해서 완료 상태를 변경할 수 있습니다 (빈칸 → ✓ → ○ → 빈칸)' : 
-                '⚠️ 테스트 모드 - 실제 업데이트는 Web App 연결 후 가능합니다';
-            
-            const couponHint = isConnected ? 
-                '💡 버튼을 클릭해서 쿠폰을 사용할 수 있습니다' : 
-                '⚠️ 테스트 모드 - 실제 사용은 Web App 연결 후 가능합니다';
-            
-            const progressPercentage = (data.frmProgress / data.frmTarget * 100).toFixed(1);
-            const remainingToTarget = Math.max(0, data.frmTarget - data.frmProgress);
-            const remainingToGolden = Math.max(0, 5 - data.currentCoupons);
-            
-            const dashboardContent = `
-                <!-- 전체 진행률 카드 -->
-                <div class="card">
-                    <h3>🎯 전체 목표 진행률</h3>
-                    <div>
-                        <p><strong>강의 수강 진도</strong></p>
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${progressPercentage}%">
-                                ${data.frmProgress}/${data.frmTarget} (${progressPercentage}%)
-                            </div>
-                        </div>
-                        <p style="color: #666; font-size: 0.9em; margin-top: 5px;">
-                            목표까지 ${remainingToTarget}개 남음
-                        </p>
-                    </div>
-                    <div class="stats">
-                        <div class="stat-item">
-                            <div class="stat-number">${data.consecutiveDays}</div>
-                            <div class="stat-label">연속 성공일</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-number">${data.currentCoupons}</div>
-                            <div class="stat-label">보유 쿠폰</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 인터랙티브 오늘의 할 일 카드 -->
-                <div class="card">
-                    <h3>✅ 오늘의 할 일</h3>
-                    <ul class="task-list">
-                        ${data.todayTasks.map(function(task, index) {
-                            const statusClass = task.status === '✓' ? 'completed' : task.status === '○' ? 'partial' : '';
-                            const checkboxClass = task.status === '✓' ? 'checked' : task.status === '○' ? 'partial' : '';
-                            const statusIcon = task.status === '✓' ? '✓' : task.status === '○' ? '○' : '';
-                            
-                            return `<li class="task-item ${statusClass}" 
-                                onclick="updateTaskInSheet('${today}', ${index}, '${task.status}')">
-                                <div class="task-checkbox ${checkboxClass}">${statusIcon}</div>
-                                <span>${task.displayText}</span>
-                            </li>`;
-                        }).join('')}
-                    </ul>
-                    <div class="interactive-hint">
-                        ${interactiveHint}
-                    </div>
-                </div>
-                
-                <!-- 인터랙티브 쿠폰 카드 -->
-                <div class="card">
-                    <h3>🎁 쿠폰 현황</h3>
-                    <div class="coupon-section">
-                        ${Array.from({length: Math.floor(data.currentCoupons)}, function(_, i) {
-                            return '<div class="coupon">🎟️ 쿠폰 ' + (i+1) + '</div>';
-                        }).join('')}
-                        ${data.currentCoupons % 1 !== 0 ? '<div class="coupon">🎫 0.5</div>' : ''}
-                    </div>
-                    <p><strong>보유 쿠폰: ${data.currentCoupons}개</strong></p>
-                    
-                    <div class="reward-milestone">
-                        🌟 골든휴식권까지 ${remainingToGolden.toFixed(1)}개 남음!
-                    </div>
-                    
-                    <!-- 쿠폰 사용 버튼들 -->
-                    <div class="coupon-buttons">
-                        <button class="btn" onclick="useCouponInSheet(1, '넷플릭스 30분')" 
-                                ${data.currentCoupons < 1 || !isConnected ? 'disabled' : ''}>
-                            🎬 넷플릭스 30분 (1쿠폰)
-                        </button>
-                        <button class="btn" onclick="useCouponInSheet(2, '공부시간 1시간 감축')"
-                                ${data.currentCoupons < 2 || !isConnected ? 'disabled' : ''}>
-                            ⏰ 1시간 감축 (2쿠폰)
-                        </button>
-                        <button class="btn" onclick="useCouponInSheet(3, '하루 면제권')"
-                                ${data.currentCoupons < 3 || !isConnected ? 'disabled' : ''}>
-                            🆓 하루 면제권 (3쿠폰)
-                        </button>
-                        <button class="btn" onclick="useCouponInSheet(5, '골든휴식권')"
-                                ${data.currentCoupons < 5 || !isConnected ? 'disabled' : ''}>
-                            🌟 골든휴식권 (5쿠폰)
-                        </button>
-                    </div>
-                    <div class="interactive-hint">
-                        ${couponHint}
-                    </div>
-                </div>
-                
-                <!-- 이번 주 진행률 카드 -->
-                <div class="card">
-                    <h3>📅 이번 주 진행률</h3>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: ${data.weeklyRate}%">
-                            ${data.weeklyRate.toFixed(1)}%
-                        </div>
-                    </div>
-                    
-                    <!-- 요일별 달성 상태 -->
-                    <div style="margin: 15px 0;">
-                        <h4 style="margin-bottom: 10px; color: #5a67d8;">요일별 달성 현황</h4>
-                        <div class="weekly-days">
-                            ${['월', '화', '수', '목', '금', '토', '일'].map((day, index) => {
-                                const status = data.weeklyStatus ? data.weeklyStatus[index] : '';
-                                const statusIcon = status === '✓' ? '✅' : status === '○' ? '🔶' : '⭕';
-                                const statusText = status === '✓' ? '달성' : status === '○' ? '부분달성' : '미달성';
-                                const cardClass = status === '✓' ? 'achieved' : status === '○' ? 'partial' : 'missed';
-                                
-                                return `
-                                    <div class="day-card ${cardClass}">
-                                        <div style="font-weight: bold;">${day}</div>
-                                        <div style="font-size: 1.2em; margin: 2px 0;">${statusIcon}</div>
-                                        <div style="font-size: 0.7em;">${statusText}</div>
-                                    </div>
-                                `;
-                            }).join('')}
-                        </div>
-                    </div>
-                    
-                    <div class="stats">
-                        <div class="stat-item">
-                            <div class="stat-number">${data.weeklyRate >= 80 ? '달성' : '진행중'}</div>
-                            <div class="stat-label">주간 목표</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-number">${data.weeklyRate >= 100 ? '2' : '0'}</div>
-                            <div class="stat-label">보너스 쿠폰</div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            if (data.error) {
-                dashboard.innerHTML += dashboardContent;
-            } else {
-                dashboard.innerHTML = dashboardContent;
-            }
-            
-            // 동기부여 메시지 업데이트
-            if (isConnected) {
-                const motivationMessages = [
-                    `🔥 현재 ${data.consecutiveDays}일 연속 성공! 이 페이스 유지하자!`,
-                    `💪 강의 ${data.frmProgress}개 완료! 목표까지 ${remainingToTarget}개 남음!`,
-                    `🎁 쿠폰 ${data.currentCoupons}개 보유! 골든휴식권까지 ${remainingToGolden.toFixed(1)}개!`,
-                    `📈 이번주 ${data.weeklyRate.toFixed(1)}% 달성! 계속 화이팅!`
-                ];
-                
-                document.getElementById('motivation').textContent = 
-                    motivationMessages[Math.floor(Math.random() * motivationMessages.length)];
-            }
-            
-            document.getElementById('lastUpdated').textContent = 
-                `마지막 업데이트: ${data.lastUpdated}`;
-        }
-        
-        // 데이터 새로고침
-        function refreshData() {
-            if (isConnected) {
-                document.getElementById('motivation').textContent = '🔄 새로고침 중...';
-                loadDashboardData();
-            } else {
-                showNotification('❌ Web App에 연결되지 않았습니다.', 'error');
-                loadTestData();
-            }
-        }
-        
-        // 디버그 정보 표시/숨김
-        function showDebugInfo() {
-            debugMode = !debugMode;
-            const debugEl = document.getElementById('debugInfo');
-            const debugContent = document.getElementById('debugContent');
-            
-            if (debugMode) {
-                debugEl.style.display = 'block';
-                debugContent.innerHTML = `
-                    <p><strong>연결 상태:</strong> ${isConnected ? '연결됨' : '연결 안됨'}</p>
-                    <p><strong>Web App URL:</strong> ${webAppUrl || '설정되지 않음'}</p>
-                    <p><strong>저장된 URL:</strong> ${localStorage.getItem('levelup_web_app_url') || '없음'}</p>
-                    <p><strong>현재 시간:</strong> ${new Date().toLocaleString()}</p>
-                    <p><strong>마지막 오류:</strong> ${lastError ? lastError.message : '없음'}</p>
-                    <p><strong>브라우저:</strong> ${navigator.userAgent}</p>
-                    <p><strong>화면 크기:</strong> ${window.innerWidth} x ${window.innerHeight}</p>
-                `;
-            } else {
-                debugEl.style.display = 'none';
-            }
-        }
-        
-        // 자동 새로고침 (5분마다, 연결된 경우에만)
-        setInterval(function() {
-            if (isConnected && !debugMode) {
-                console.log('자동 새로고침 실행');
-                loadDashboardData();
-            }
-        }, 5 * 60 * 1000);
-        
-        // 페이지 포커스시 새로고침
-        window.addEventListener('focus', function() {
-            if (isConnected) {
-                console.log('페이지 포커스 감지, 새로고침');
-                setTimeout(loadDashboardData, 1000);
-            }
-        });
-        
-        // 에러 핸들링 개선
-        window.addEventListener('error', function(e) {
-            console.error('전역 오류 감지:', e.error);
-            lastError = e.error;
-            
-            if (debugMode) {
-                showNotification('⚠️ JavaScript 오류가 발생했습니다. 디버그 정보를 확인하세요.', 'warning');
-            }
-        });
-        
-        // 온라인/오프라인 상태 감지
-        window.addEventListener('online', function() {
-            showNotification('🌐 인터넷 연결이 복구되었습니다.');
-            if (webAppUrl && !isConnected) {
-                setTimeout(testConnection, 2000);
-            }
-        });
-        
-        window.addEventListener('offline', function() {
-            showNotification('📡 인터넷 연결이 끊어졌습니다.', 'warning');
-            isConnected = false;
-            updateConnectionStatus('오프라인', false);
-        });
-    </script>
-</body>
-</html>
+        @keyframes
